@@ -41,6 +41,11 @@
  *           foreground session until you exit it; on "+ New agent": create
  *           one; in Project/bookmarks mode: enter that project's agent list
  *   v       view the selected agent's raw file (any tab, including Plugin)
+ *   c       copy the selected agent's file into another project's
+ *           .claude/agents/ (any tab, including Plugin — not the Project
+ *           bookmarks-list itself, whose rows aren't agents). Prompts for a
+ *           destination (cwd, a bookmark, or a typed path) and confirms
+ *           before overwriting a same-named file already there.
  *   e       edit the selected agent with $EDITOR (Project/User only)
  *   x       delete the selected agent, after retyping its name to confirm
  *           (Project/User only). On a tracked plugin agent shown in User,
@@ -56,8 +61,8 @@
  *           bookmarked project), User, and Plugin — matching the query
  *           against agent name, description, or its project/plugin label.
  *           Enter launches the highlighted result; Tab opens a menu for it
- *           (Launch/View/Edit/Delete, or Launch/View/Track for a
- *           not-yet-tracked plugin result — not bare v/e/x/u or Ctrl+letter,
+ *           (Launch/View/Edit/Delete/Copy, or Launch/View/Track/Copy for a
+ *           not-yet-tracked plugin result — not bare v/e/x/u/c or Ctrl+letter,
  *           since this is a live text field and letters must stay free for
  *           typing the query, and Ctrl combos aren't reliable either, e.g.
  *           Ctrl+V is commonly claimed by the terminal/OS as Paste). Works
@@ -678,12 +683,14 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
   }
   const editHint = data[tabKey].writable && !(tabKey === 'project' && projectMode === 'bookmarks') ? '   e edit   x delete' : '';
   const viewHint = tabKey === 'project' && projectMode === 'bookmarks' ? '' : '   v view';
+  const copyHint = tabKey === 'project' && projectMode === 'bookmarks' ? '' : '   c copy to project';
   const trackHint = tabKey === 'plugin' ? '   u track/untrack → User tab' : '';
   out +=
     '\n' +
     dim(
       '←/→ tabs   ↑/↓ move   Enter run' +
         viewHint +
+        copyHint +
         editHint +
         trackHint +
         '   / search   ? help   q quit' +
@@ -1183,15 +1190,20 @@ async function searchFlow(cwd, cwdAgentsDir, cfg) {
         // character here.
         const deleteLabel = row.linked ? 'Untrack from User tab' : 'Delete';
         const trackLabel = cfg.trackedPluginAgents.includes(row.file) ? 'Untrack from User tab' : 'Track into User tab';
+        // Copy is offered regardless of scope/writability — same reasoning
+        // as the 'c' hotkey in listLoop: forking a User or Plugin agent into
+        // a specific project is just as valid a source as another project.
+        const copyLabel = 'Copy to project…';
         const options = row.writable
-          ? ['Launch', 'View', 'Edit', deleteLabel]
+          ? ['Launch', 'View', 'Edit', deleteLabel, copyLabel]
           : row.scopeKind === 'plugin'
-            ? ['Launch', 'View', trackLabel]
-            : ['Launch', 'View'];
+            ? ['Launch', 'View', trackLabel, copyLabel]
+            : ['Launch', 'View', copyLabel];
         const choice = await pickOption(row.name, [`[${row.scopeKind}] ${row.label}`, row.description], options);
         if (choice === 'Launch') status = runAgentSession(row);
         else if (choice === 'View') await viewFile(row);
         else if (choice === 'Edit') status = await editAgent(row);
+        else if (choice === copyLabel) status = await copyAgentFlow(row, cwd, cfg);
         else if (row.writable && choice === deleteLabel) {
           status = row.linked ? untrackPluginAgent(cfg, row) : await deleteAgent(row);
         } else if (row.scopeKind === 'plugin' && choice === trackLabel) {
@@ -1243,6 +1255,54 @@ async function addProjectFolder(cwd, cfg) {
     saveConfig(cfg);
   }
   return root;
+}
+
+// Menu of possible copy destinations: the current project (cwd) plus every
+// bookmarked project, plus a "type a path" escape hatch that reuses
+// addProjectFolder's create-if-missing/bookmark-it flow — copying an agent
+// into a project that isn't bookmarked yet shouldn't need a second, separate
+// typed-path prompt duplicating that logic. Returns the target project ROOT
+// (not its agents dir — copyAgentFlow derives that itself, same convention
+// bookmark rows and addProjectFolder already use), or null if the user
+// backed out (Esc from the menu, or backed out of addProjectFolder's prompt).
+async function pickCopyTarget(cwd, cfg) {
+  const roots = [cwd, ...cfg.bookmarks];
+  const options = [`${path.basename(cwd)} (cwd)`, ...cfg.bookmarks, 'Type a path…'];
+  const choice = await pickOption('Copy to which project?', [], options);
+  if (choice === null) return null;
+  if (choice === 'Type a path…') return addProjectFolder(cwd, cfg);
+  return roots[options.indexOf(choice)];
+}
+
+// Copies an agent's file as-is into another project's .claude/agents/ —
+// reachable from Project, User, and Plugin tabs alike (see the 'c' hotkey in
+// listLoop and the "Copy to project…" search action), since forking a
+// personal or plugin agent into one specific project is just as common a
+// need as moving an agent between two projects. A straight byte-for-byte
+// copy, not a rename/merge — the file keeps its own name and frontmatter, so
+// a same-named file already at the destination is a real conflict, not
+// something to silently resolve. That's confirmed with a plain y/N rather
+// than delete's retype-the-name gate: overwriting here is easier to recover
+// from (the old content is still one `x` + editor-undo away, and nothing is
+// removed outright) than delete's actual, unrecoverable removal.
+async function copyAgentFlow(agent, cwd, cfg) {
+  const targetRoot = await pickCopyTarget(cwd, cfg);
+  if (!targetRoot) return 'Copy cancelled.';
+  const targetDir = path.join(targetRoot, '.claude', 'agents');
+  const targetFile = path.join(targetDir, `${agent.name}.md`);
+  if (path.resolve(targetFile) === path.resolve(agent.file)) {
+    return `"${agent.name}" is already at ${targetFile} — nothing to copy.`;
+  }
+  if (fs.existsSync(targetFile)) {
+    const confirm = await askLine(`${targetFile} already exists. Overwrite? (y/N): `);
+    if (confirm.trim().toLowerCase() !== 'y') return 'Copy cancelled.';
+  }
+  const dirExisted = isDir(targetDir);
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.copyFileSync(agent.file, targetFile);
+  let note = `Copied ${agent.name} to ${targetFile}.`;
+  if (!dirExisted) note += ' New agents/ directory — restart Claude Code to pick it up.';
+  return note;
 }
 
 function buildManualTemplate(name, description) {
@@ -1589,6 +1649,14 @@ async function listLoop() {
       if (row && !row.virtual) {
         status = row.linked ? untrackPluginAgent(cfg, row) : await deleteAgent(row);
       }
+    } else if (key.name === 'c' && !(tabKey === 'project' && projectMode === 'bookmarks')) {
+      // Copy works from any tab that can show a real agent row (Project,
+      // User, Plugin) — same "any tab" reach as 'v' — but not the Project
+      // bookmarks-list mode, whose rows are virtual bookmark/add-bookmark
+      // entries rather than agents.
+      rows = rowsFor(data, tabKey, projectMode, cfg);
+      const row = rows[selIndex[sKey]];
+      if (row && !row.virtual) status = await copyAgentFlow(row, cwd, cfg);
     } else if (key.str === 'u' && tabKey === 'plugin') {
       // Track/untrack toggle — Plugin tab's own scope stays read-only
       // (data.plugin.writable is still false, so 'e'/'x' here still do

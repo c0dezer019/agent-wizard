@@ -46,13 +46,14 @@ Runs `git pull` in this checkout. Since the installed binary is a symlink (or, o
 | `↑` / `↓` | move selection (scrolls to keep selection visible) |
 | `Enter` | on an agent: launch it (`claude --agent <name>`, foreground); on "+ New agent": create one; in Project bookmarks mode: enter that project's agent list |
 | `v` | view selected agent's raw file (any tab, incl. Plugin) |
+| `c` | copy selected agent's file into another project's `.claude/agents/` (any tab, incl. Plugin — not the bookmarks list itself). Pick cwd, a bookmark, or type a new path; confirms before overwriting a same-named file at the destination |
 | `e` | edit selected agent with `$EDITOR` (Project/User only) |
 | `x` | delete selected agent, after retyping its name to confirm (Project/User only). On a tracked plugin agent (shown in User), untracks instead — the plugin file itself is never touched |
 | `u` | (Plugin tab) track/untrack the selected agent into the User tab — see Scopes below |
 | `b` | (Project tab) jump between cwd and bookmarks |
 | `Esc` | (Project tab, inside a bookmark project) back to bookmarks list |
 | `d` | (Project tab, bookmarks list) remove highlighted bookmark |
-| `/` | search every scope at once (Project cwd + every bookmarked project + User + Plugin) by name, description, or project/plugin label; `Enter` launches a result, `Tab` opens a menu for it (Launch/View/Edit/Delete, or Launch/View/Track for an untracked plugin result) — no bare-letter or Ctrl hotkeys here, since letters are needed for typing the query and Ctrl combos like Ctrl+V are often claimed by the terminal/OS as Paste |
+| `/` | search every scope at once (Project cwd + every bookmarked project + User + Plugin) by name, description, or project/plugin label; `Enter` launches a result, `Tab` opens a menu for it (Launch/View/Edit/Delete/Copy, or Launch/View/Track/Copy for an untracked plugin result) — no bare-letter or Ctrl hotkeys here, since letters are needed for typing the query and Ctrl combos like Ctrl+V are often claimed by the terminal/OS as Paste |
 | `?` | help on writing a good agent (name/description/tools/model/system-prompt) |
 | `q` | quit (main list); back (menus/viewer/help) |
 

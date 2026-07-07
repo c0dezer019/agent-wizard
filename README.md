@@ -39,10 +39,12 @@ chmod +x agents-wizard.js && ./agents-wizard.js
 | `Enter` | on an agent: launch it (`claude --agent <name>`, foreground); on "+ New agent": create one; in Project bookmarks mode: enter that project's agent list |
 | `v` | view selected agent's raw file (any tab, incl. Plugin) |
 | `e` | edit selected agent with `$EDITOR` (Project/User only) |
-| `x` | delete selected agent, after retyping its name to confirm (Project/User only) |
+| `x` | delete selected agent, after retyping its name to confirm (Project/User only). On a tracked plugin agent (shown in User), untracks instead — the plugin file itself is never touched |
+| `u` | (Plugin tab) track/untrack the selected agent into the User tab — see Scopes below |
 | `b` | (Project tab) jump between cwd and bookmarks |
 | `Esc` | (Project tab, inside a bookmark project) back to bookmarks list |
 | `d` | (Project tab, bookmarks list) remove highlighted bookmark |
+| `/` | search every scope at once (Project cwd + every bookmarked project + User + Plugin) by name, description, or project/plugin label; `Enter` launches a result, `Tab` opens a menu for it (Launch/View/Edit/Delete, or Launch/View/Track for an untracked plugin result) — no bare-letter or Ctrl hotkeys here, since letters are needed for typing the query and Ctrl combos like Ctrl+V are often claimed by the terminal/OS as Paste |
 | `?` | help on writing a good agent (name/description/tools/model/system-prompt) |
 | `q` | quit (main list); back (menus/viewer/help) |
 
@@ -53,8 +55,8 @@ chmod +x agents-wizard.js && ./agents-wizard.js
   - `bookmarks`: flat list of remembered project folders (`~/.claude/agents-wizard/config.json`). `d` removes a bookmark (non-destructive, no confirmation).
   - `bookmark-project`: one bookmarked project's agents, same writable list as cwd. `Esc` → bookmarks list, `b` → cwd.
   - `b` resumes whichever bookmark state you last left; backing all the way out forgets it, so the next `b` from cwd goes to the list.
-- **User** — `~/.claude/agents/` (personal, all projects). Writable.
-- **Plugin** — always empty by design. Plugin caches under `~/.claude/plugins/cache/` keep orphaned copies for ~7 days after updates, so it's not a reliable "what's installed" source and is excluded rather than shown unreliably.
+- **User** — `~/.claude/agents/` (personal, all projects). Writable. Also shows any plugin agents you've "tracked" (see Plugin below), mixed into the same list — they're real rows here, with the same Enter/`v`/`e`/`x`.
+- **Plugin** — `~/.claude/plugins/marketplaces/**/agents/*.md`. All agents from plugins. Some plugins may include an agent with same name as another. Differentiated with a column that shows plugin it belongs to. Read-only in this tab (`e`/`x` do nothing here) — but `u` tracks/untracks the highlighted agent into the User tab (marked `★` here once tracked), for when you own that plugin/marketplace checkout and want to edit it directly. Tracking only remembers the file path (`~/.claude/agents-wizard/config.json`, `trackedPluginAgents`) — it does **not** copy the file into `~/.claude/agents/`, so editing a tracked agent from the User tab edits the plugin's real file in place. Only do this for a plugin you own or are developing; untracking (`x` on the linked row, or `u` again from the Plugin tab) just forgets the pointer and never touches the file.
 
 ## Creating an agent
 

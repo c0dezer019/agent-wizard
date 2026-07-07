@@ -43,11 +43,25 @@
  *   v       view the selected agent's raw file (any tab, including Plugin)
  *   e       edit the selected agent with $EDITOR (Project/User only)
  *   x       delete the selected agent, after retyping its name to confirm
- *           (Project/User only)
+ *           (Project/User only). On a tracked plugin agent shown in User,
+ *           this untracks instead — the plugin's file is never touched.
+ *   u       (Plugin tab only) track/untrack the selected agent into the
+ *           User tab, for editing a plugin you own in place — see Scopes
+ *           below
  *   b       (Project tab only) jump between cwd and bookmarks — see below
  *   Esc     (Project tab, inside an entered bookmark project) back to the
  *           bookmarks list
  *   d       (Project tab, bookmarks list only) remove the highlighted bookmark
+ *   /       search across every scope at once — Project (cwd + every
+ *           bookmarked project), User, and Plugin — matching the query
+ *           against agent name, description, or its project/plugin label.
+ *           Enter launches the highlighted result; Tab opens a menu for it
+ *           (Launch/View/Edit/Delete, or Launch/View/Track for a
+ *           not-yet-tracked plugin result — not bare v/e/x/u or Ctrl+letter,
+ *           since this is a live text field and letters must stay free for
+ *           typing the query, and Ctrl combos aren't reliable either, e.g.
+ *           Ctrl+V is commonly claimed by the terminal/OS as Paste). Works
+ *           from any tab.
  *   ?       show help on writing a good agent (name/description/tools/
  *           model/system-prompt guidance) — works from any tab
  *   q       quit (from the main list)
@@ -87,13 +101,28 @@
  *             remembered bookmark) forgets the remembered project, so the
  *             next 'b' from cwd goes to the list, not back into it.
  *             Writable in cwd and bookmark-project.
- *   User    — ~/.claude/agents/ (personal, all projects). Writable.
+ *   User    — ~/.claude/agents/ (personal, all projects). Writable. Also
+ *             shows any "tracked" plugin agents (below) mixed into the same
+ *             list — they're real rows here, not a separate section, so
+ *             they get the exact same Enter/v/e/x treatment.
  *   Plugin  — every agents/ directory under ~/.claude/plugins/marketplaces/
  *             (see findPluginAgentDirs), deduped when the same agent is
  *             reachable via more than one registered marketplace (same
  *             name + identical content — see dedupeAgents). Never touches
- *             ~/.claude/plugins/cache/. Read-only (nothing here would be
- *             editable anyway).
+ *             ~/.claude/plugins/cache/. Read-only in this tab (e/x do
+ *             nothing here) — but 'u' tracks/untracks the highlighted agent
+ *             into the User tab (marked with a ★ here once tracked), for
+ *             when you own that plugin/marketplace checkout yourself and
+ *             want to edit it directly. Tracking only remembers the file
+ *             path in config (~/.claude/agents-wizard/config.json,
+ *             trackedPluginAgents) — it does NOT copy the file into
+ *             ~/.claude/agents/, so editing a tracked agent from the User
+ *             tab edits the plugin's real file in place. That's the point
+ *             (no fork/copy step for someone actively developing the
+ *             plugin), but it does mean it's not a safe thing to do to a
+ *             plugin you don't own — untracking ('x' on the linked row, or
+ *             'u' again from here) only forgets the pointer and never
+ *             touches the file either way.
  */
 
 const fs = require('fs');
@@ -151,21 +180,34 @@ function configFile() {
   return path.join(os.homedir(), '.claude', 'agents-wizard', 'config.json');
 }
 
+// trackedPluginAgents: absolute file paths of plugin-tab agents the user has
+// chosen to surface (and make editable) in the User tab — see scanAll and
+// the 'u' key in listLoop. Deliberately just a list of paths, not copies of
+// the files themselves: the whole point is editing the plugin's own file in
+// place (for someone developing or forking their own plugin locally), not
+// forking content into ~/.claude/agents the way "+ New agent" does.
 function loadConfig() {
   try {
     const raw = fs.readFileSync(configFile(), 'utf8');
     const data = JSON.parse(raw);
     const bookmarks = Array.isArray(data.bookmarks) ? data.bookmarks.filter((b) => typeof b === 'string') : [];
-    return { bookmarks };
+    const trackedPluginAgents = Array.isArray(data.trackedPluginAgents)
+      ? data.trackedPluginAgents.filter((p) => typeof p === 'string')
+      : [];
+    return { bookmarks, trackedPluginAgents };
   } catch {
-    return { bookmarks: [] };
+    return { bookmarks: [], trackedPluginAgents: [] };
   }
 }
 
 function saveConfig(cfg) {
   const file = configFile();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ bookmarks: cfg.bookmarks }, null, 2) + '\n', 'utf8');
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ bookmarks: cfg.bookmarks, trackedPluginAgents: cfg.trackedPluginAgents }, null, 2) + '\n',
+    'utf8'
+  );
 }
 
 function listMdFiles(dir) {
@@ -288,7 +330,10 @@ function dedupeAgents(list) {
   return Array.from(seen.values());
 }
 
-function scanAll(cwd, projectAgentsDir) {
+// cfg is optional (defaults to no tracked agents) so existing callers/tests
+// that only care about project/user/plugin scanning don't need to know
+// about tracking at all.
+function scanAll(cwd, projectAgentsDir, cfg = { trackedPluginAgents: [] }) {
   const userDir = path.join(os.homedir(), '.claude', 'agents');
   const pluginMarketplacesRoot = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces');
 
@@ -303,11 +348,112 @@ function scanAll(cwd, projectAgentsDir) {
   // its source is what gets displayed.
   const plugin = dedupeAgents(pluginRaw).sort((a, b) => a.name.localeCompare(b.name));
 
+  // Tracked plugin agents ride along in the User tab's own list (not a
+  // separate section) so they get the exact same Enter/v/e/x treatment any
+  // other User-tab row gets -- `linked: true` is only there so the 'x'
+  // handler in listLoop knows to untrack instead of deleting the file, and
+  // so renderList can show where the row actually lives on disk. A tracked
+  // path can go stale (plugin uninstalled, marketplace re-synced to a
+  // different copy after dedup) -- silently drop it rather than throwing,
+  // same tolerance listMdFiles already has for a missing directory.
+  const linked = (cfg.trackedPluginAgents || [])
+    .filter((filePath) => {
+      try {
+        return fs.statSync(filePath).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .map((filePath) => ({
+      ...loadAgentFile(filePath),
+      source: pluginSourceLabel(filePath, pluginMarketplacesRoot),
+      linked: true,
+    }));
+
   return {
     project: { dir: projectAgentsDir, agents: project, writable: true },
-    user: { dir: userDir, agents: user, writable: true },
+    user: { dir: userDir, agents: [...user, ...linked], writable: true },
     plugin: { dir: pluginMarketplacesRoot, agents: plugin, writable: false },
   };
+}
+
+// Search (/) flattens every scope the wizard knows about into one list, each
+// row tagged with a human "where" label — unlike the tab system, this needs
+// to show agents from bookmarked projects the user *isn't* currently
+// looking at, not just the active cwd/bookmark-project, so it re-scans every
+// bookmark root directly rather than reusing scanAll (which only knows about
+// whichever single project dir is "current"). writable mirrors what e/x
+// would do if you navigated to that row's own scope normally.
+function buildSearchIndex(cwd, cwdAgentsDir, cfg) {
+  const entries = [];
+
+  function addProjectDir(dir, label, root) {
+    for (const agent of listMdFiles(dir).map(loadAgentFile)) {
+      entries.push({ ...agent, scopeKind: 'project', label, root, writable: true });
+    }
+  }
+
+  addProjectDir(cwdAgentsDir, `${path.basename(cwd)} (cwd)`, cwd);
+  for (const root of cfg.bookmarks) {
+    if (path.resolve(root) === path.resolve(cwd)) continue; // cwd already added above
+    addProjectDir(path.join(root, '.claude', 'agents'), path.basename(root), root);
+  }
+
+  const userDir = path.join(os.homedir(), '.claude', 'agents');
+  for (const agent of listMdFiles(userDir).map(loadAgentFile)) {
+    entries.push({ ...agent, scopeKind: 'user', label: 'User', root: null, writable: true });
+  }
+
+  const pluginMarketplacesRoot = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces');
+  const pluginRaw = findPluginAgentDirs(pluginMarketplacesRoot)
+    .flatMap((dir) => listMdFiles(dir))
+    .map((f) => ({ ...loadAgentFile(f), source: pluginSourceLabel(f, pluginMarketplacesRoot) }));
+  for (const agent of dedupeAgents(pluginRaw)) {
+    entries.push({ ...agent, scopeKind: 'plugin', label: agent.source, root: null, writable: false });
+  }
+
+  // Tracked (linked) plugin agents show up as User-tab rows here too, same
+  // as scanAll does for the main list — writable: true because editing one
+  // edits the real plugin file in place (see scanAll's comment), and
+  // `linked: true` so searchFlow's Tab/Delete action untracks rather than
+  // deleting that file.
+  for (const filePath of cfg.trackedPluginAgents || []) {
+    let isFile = false;
+    try {
+      isFile = fs.statSync(filePath).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (!isFile) continue;
+    const agent = loadAgentFile(filePath);
+    entries.push({
+      ...agent,
+      scopeKind: 'user',
+      // scopeTag in renderSearch already renders "[user]" for this row, so
+      // the label only needs the "which plugin" part, not "User" again.
+      label: `linked: ${pluginSourceLabel(filePath, pluginMarketplacesRoot)}`,
+      root: null,
+      writable: true,
+      linked: true,
+    });
+  }
+
+  return entries;
+}
+
+// "type either a plugin, project, or partial agent name" — one query, checked
+// as a case-insensitive substring against all three: name, description, and
+// the row's project/plugin label, rather than needing a mode switch to pick
+// which field you're searching.
+function filterSearchIndex(entries, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return entries;
+  return entries.filter(
+    (e) =>
+      e.name.toLowerCase().includes(q) ||
+      e.description.toLowerCase().includes(q) ||
+      e.label.toLowerCase().includes(q)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +494,8 @@ function computeColumnWidths(rows, tabKey, termWidth) {
   }
 
   const sourceWidth = Math.min(MAX_SOURCE_WIDTH, Math.max(4, ...realRows.map((r) => (r.source || '').length)));
-  const fixed = 2 /* indent */ + nameWidth + 1 /* gap */ + sourceWidth + 1 /* gap */ + 2 /* '— ' */;
+  const fixed =
+    2 /* indent */ + 2 /* tracked marker */ + nameWidth + 1 /* gap */ + sourceWidth + 1 /* gap */ + 2 /* '— ' */;
   return { nameWidth, sourceWidth, descWidth: Math.max(MIN_DESC_WIDTH, termWidth - fixed) };
 }
 
@@ -490,14 +637,22 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
       // plugins -- dedupeAgents only collapses identical files, not name
       // collisions, so those need to stay visually distinguishable. Column
       // widths come from computeColumnWidths, which re-measures the
-      // terminal on every render.
+      // terminal on every render. A fixed 2-char marker column (blank when
+      // not tracked) shows which plugin agents are currently tracked into
+      // the User tab ('u' toggles it), without disturbing column alignment
+      // for the untracked majority.
       const label = row.virtual
         ? row.label
         : tabKey === 'plugin'
-          ? `${truncate(row.name, cols.nameWidth).padEnd(cols.nameWidth)} ${dim(
-              truncate(row.source || '(unknown)', cols.sourceWidth).padEnd(cols.sourceWidth)
-            )} ${dim('— ' + truncate(row.description, cols.descWidth))}`
-          : `${truncate(row.name, cols.nameWidth).padEnd(cols.nameWidth)}  ${dim('— ' + truncate(row.description, cols.descWidth))}`;
+          ? `${cfg.trackedPluginAgents.includes(row.file) ? '★ ' : '  '}${truncate(row.name, cols.nameWidth).padEnd(
+              cols.nameWidth
+            )} ${dim(truncate(row.source || '(unknown)', cols.sourceWidth).padEnd(cols.sourceWidth))} ${dim(
+              '— ' + truncate(row.description, cols.descWidth)
+            )}`
+          : `${truncate(row.name, cols.nameWidth).padEnd(cols.nameWidth)}  ${dim(
+              '— ' +
+                truncate((row.linked ? `[linked: ${row.source}] ` : '') + row.description, cols.descWidth)
+            )}`;
       const line = `  ${label}`;
       out += (absoluteIndex === selIndex ? reverse(line) : line) + '\n';
     });
@@ -515,9 +670,59 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
   }
   const editHint = data[tabKey].writable && !(tabKey === 'project' && projectMode === 'bookmarks') ? '   e edit   x delete' : '';
   const viewHint = tabKey === 'project' && projectMode === 'bookmarks' ? '' : '   v view';
+  const trackHint = tabKey === 'plugin' ? '   u track/untrack → User tab' : '';
   out +=
     '\n' +
-    dim('←/→ tabs   ↑/↓ move   Enter run' + viewHint + editHint + '   ? help   q quit' + modeHint + scrollHint) +
+    dim(
+      '←/→ tabs   ↑/↓ move   Enter run' +
+        viewHint +
+        editHint +
+        trackHint +
+        '   / search   ? help   q quit' +
+        modeHint +
+        scrollHint
+    ) +
+    '\n';
+  if (status) out += '\n' + status + '\n';
+  process.stdout.write(out);
+}
+
+// Flat result list, not tabbed — a match can come from any scope at once, so
+// each row carries its own "[kind] label" tag (project name, "User", or
+// plugin source) inline instead of relying on a tab to say where it's from.
+function renderSearch(query, results, selIndex, scrollOffset, viewHeight, status) {
+  let out = clearScreen();
+  out += bold('Agents Wizard — search') + '\n\n';
+  out += `Search: ${query}${reverse(' ')}` + '\n\n';
+
+  if (results.length === 0) {
+    out += dim(query ? '  (no matches)' : '  (type to search Project + User + Plugin agents by name/description/project)') + '\n';
+  } else {
+    const termWidth = process.stdout.columns || 80;
+    const nameWidth = Math.min(MAX_NAME_WIDTH, Math.max(4, ...results.map((r) => r.name.length)));
+    const tagWidth = Math.min(MAX_SOURCE_WIDTH, Math.max(4, ...results.map((r) => (r.label || '').length + 7)));
+    const fixed = 2 /* indent */ + nameWidth + 1 /* gap */ + tagWidth + 1 /* gap */ + 2 /* '— ' */;
+    const descWidth = Math.max(MIN_DESC_WIDTH, termWidth - fixed);
+    const visible = results.slice(scrollOffset, scrollOffset + viewHeight);
+    visible.forEach((row, i) => {
+      const absoluteIndex = scrollOffset + i;
+      const scopeTag = row.scopeKind === 'project' ? 'proj' : row.scopeKind === 'user' ? 'user' : 'plug';
+      const tag = `[${scopeTag}] ${row.label}`;
+      const label = `${truncate(row.name, nameWidth).padEnd(nameWidth)} ${dim(
+        truncate(tag, tagWidth).padEnd(tagWidth)
+      )} ${dim('— ' + truncate(row.description, descWidth))}`;
+      const line = `  ${label}`;
+      out += (absoluteIndex === selIndex ? reverse(line) : line) + '\n';
+    });
+  }
+
+  const scrollHint =
+    results.length > viewHeight
+      ? `   (${Math.min(scrollOffset + 1, results.length)}-${Math.min(scrollOffset + viewHeight, results.length)} of ${results.length})`
+      : '';
+  out +=
+    '\n' +
+    dim('type to filter   ↑/↓ move   Enter run   Tab actions   Esc back' + scrollHint) +
     '\n';
   if (status) out += '\n' + status + '\n';
   process.stdout.write(out);
@@ -536,6 +741,30 @@ function renderMenu(title, subtitleLines, options, idx) {
   process.stdout.write(out);
 }
 
+// renderViewer prints each entry in `lines` as exactly one on-screen row, so
+// its own pager math (scroll/viewHeight) is only correct if that's actually
+// true. Agent files routinely have long unwrapped lines (a system-prompt
+// paragraph, a dense description) that run well past terminal width — left
+// as-is, the terminal itself wraps them at write time into 2+ *visual* rows
+// the pager never accounted for, so the total painted this frame exceeds
+// process.stdout.rows and the terminal auto-scrolls mid-paint. That scrolls
+// the title and the first several lines off the top of the screen before
+// the frame even finishes — the "cut off at the top" symptom. Wrapping to
+// `width` ourselves first makes one array entry == one visual row again, so
+// viewHeight actually bounds what gets painted.
+function wrapText(raw, width) {
+  const w = Math.max(1, width);
+  const out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.length === 0) {
+      out.push('');
+      continue;
+    }
+    for (let i = 0; i < line.length; i += w) out.push(line.slice(i, i + w));
+  }
+  return out;
+}
+
 function renderViewer(agent, lines, scroll, viewHeight) {
   let out = clearScreen();
   out += bold(agent.file) + '\n\n';
@@ -543,7 +772,7 @@ function renderViewer(agent, lines, scroll, viewHeight) {
   const last = Math.min(scroll + viewHeight, lines.length);
   out +=
     '\n' +
-    dim(`↑/↓ scroll (${lines.length ? scroll + 1 : 0}-${last}/${lines.length})   Esc/q back`) +
+    dim(`↑/↓ scroll   PgUp/PgDn page (${lines.length ? scroll + 1 : 0}-${last}/${lines.length})   Esc/q back`) +
     '\n';
   process.stdout.write(out);
 }
@@ -632,16 +861,22 @@ function openEditor(filePath) {
 // ---------------------------------------------------------------------------
 
 async function viewFile(agent) {
-  const lines = agent.raw.split(/\r?\n/);
   let scroll = 0;
   for (;;) {
     const rows = process.stdout.rows || 24;
+    const cols = process.stdout.columns || 80;
     const viewHeight = Math.max(3, rows - 5);
+    // Re-wrapped every frame (cheap at agent-file sizes) so a mid-view
+    // terminal resize re-flows correctly instead of using stale widths.
+    const lines = wrapText(agent.raw, cols);
+    scroll = Math.min(scroll, Math.max(0, lines.length - viewHeight));
     renderViewer(agent, lines, scroll, viewHeight);
     setRaw(true);
     const key = await waitForKey();
     if (key.name === 'up') scroll = Math.max(0, scroll - 1);
     else if (key.name === 'down') scroll = Math.min(Math.max(0, lines.length - viewHeight), scroll + 1);
+    else if (key.name === 'pageup') scroll = Math.max(0, scroll - viewHeight);
+    else if (key.name === 'pagedown') scroll = Math.min(Math.max(0, lines.length - viewHeight), scroll + viewHeight);
     else if (key.name === 'escape' || key.name === 'q' || key.name === 'return') return;
     else if (key.ctrl && key.name === 'c') process.exit(0);
   }
@@ -864,6 +1099,105 @@ async function deleteAgent(agent) {
   if (typed !== agent.name) return 'Delete cancelled.';
   fs.unlinkSync(agent.file);
   return `Deleted ${path.basename(agent.file)}.`;
+}
+
+// The 'x'/Delete action on a `linked: true` row (a tracked plugin agent
+// surfaced in the User tab — see scanAll) removes the tracking pointer from
+// config only. The plugin's actual file is left completely alone: deleting
+// someone's plugin source out from under them because they hit the same key
+// they'd use to delete a real user agent would be a nasty surprise. Same
+// non-destructive spirit as removing a bookmark ('d' in Project/bookmarks
+// mode) — no retype-to-confirm, because nothing is actually being destroyed.
+function untrackPluginAgent(cfg, agent) {
+  cfg.trackedPluginAgents = cfg.trackedPluginAgents.filter((fp) => fp !== agent.file);
+  saveConfig(cfg);
+  return `Untracked ${agent.name} from User tab (plugin file itself untouched).`;
+}
+
+function trackPluginAgent(cfg, agent) {
+  if (!cfg.trackedPluginAgents.includes(agent.file)) cfg.trackedPluginAgents.push(agent.file);
+  saveConfig(cfg);
+  return `Tracked ${agent.name} into User tab — editing it there edits this plugin file directly (only do this for a plugin you own/are developing).`;
+}
+
+// Shared by the main list's 'u' hotkey and search's Tab menu — flips a
+// Plugin-scope row between tracked/untracked, applying the right side
+// effect (and status message) for whichever state it's leaving.
+function toggleTrackedPluginAgent(cfg, agent) {
+  return cfg.trackedPluginAgents.includes(agent.file) ? untrackPluginAgent(cfg, agent) : trackPluginAgent(cfg, agent);
+}
+
+// Live-filtered search over every scope at once (Project cwd + every
+// bookmarked project + User + Plugin) — reuses the same keyQueue/waitForKey
+// character-at-a-time approach as askLine, but renders a filtered result
+// list under the query instead of a single-line prompt. Enter launches the
+// highlighted result directly (the common case). View/Edit/Delete are
+// tucked behind Tab -> a pickOption menu instead of bare hotkeys or Ctrl
+// combos: this is a live text field, so bare letters must stay free for
+// typing the query (a bare 'e' both inserted into the query *and* fired the
+// edit hotkey), and Ctrl+letter isn't reliable either — Ctrl+V in particular
+// is commonly eaten by the terminal/OS as its own Paste shortcut before the
+// byte ever reaches this process. Tab and pickOption's arrow-key navigation
+// don't collide with anything typeable, so this sidesteps both problems.
+// Re-scans the filesystem on every keystroke, same as the main loop already
+// does per-render via scanAll — fine at agent-file counts, no caching needed.
+async function searchFlow(cwd, cwdAgentsDir, cfg) {
+  let query = '';
+  let selIndex = 0;
+  let scrollOffset = 0;
+  let status = '';
+  for (;;) {
+    const results = filterSearchIndex(buildSearchIndex(cwd, cwdAgentsDir, cfg), query);
+    if (selIndex >= results.length) selIndex = Math.max(0, results.length - 1);
+    const termRows = process.stdout.rows || 24;
+    const viewHeight = Math.max(3, termRows - (status ? 10 : 8));
+    scrollOffset = computeViewport(results.length, selIndex, scrollOffset, viewHeight);
+    renderSearch(query, results, selIndex, scrollOffset, viewHeight, status);
+    status = '';
+
+    setRaw(true);
+    const key = await waitForKey();
+    const row = results[selIndex];
+    if (key.ctrl && key.name === 'c') process.exit(0);
+    else if (key.name === 'escape') return;
+    else if (key.name === 'up') selIndex = Math.max(0, selIndex - 1);
+    else if (key.name === 'down') selIndex = Math.min(results.length - 1, selIndex + 1);
+    else if (key.name === 'return' || key.name === 'enter') {
+      if (row) status = runAgentSession(row);
+    } else if (key.name === 'tab') {
+      if (row) {
+        // Linked (tracked plugin) rows get "Untrack" instead of "Delete" —
+        // same file-safety reasoning as untrackPluginAgent itself. Plain
+        // Plugin-scope rows (not yet tracked, not writable at all) get a
+        // Track/Untrack option instead of Edit/Delete, same toggle as the
+        // main list's 'u' hotkey — this is the only way to reach that
+        // action from inside search, since 'u' would just be a query
+        // character here.
+        const deleteLabel = row.linked ? 'Untrack from User tab' : 'Delete';
+        const trackLabel = cfg.trackedPluginAgents.includes(row.file) ? 'Untrack from User tab' : 'Track into User tab';
+        const options = row.writable
+          ? ['Launch', 'View', 'Edit', deleteLabel]
+          : row.scopeKind === 'plugin'
+            ? ['Launch', 'View', trackLabel]
+            : ['Launch', 'View'];
+        const choice = await pickOption(row.name, [`[${row.scopeKind}] ${row.label}`, row.description], options);
+        if (choice === 'Launch') status = runAgentSession(row);
+        else if (choice === 'View') await viewFile(row);
+        else if (choice === 'Edit') status = await editAgent(row);
+        else if (row.writable && choice === deleteLabel) {
+          status = row.linked ? untrackPluginAgent(cfg, row) : await deleteAgent(row);
+        } else if (row.scopeKind === 'plugin' && choice === trackLabel) {
+          status = toggleTrackedPluginAgent(cfg, row);
+        }
+      }
+    } else if (key.name === 'backspace') {
+      query = query.slice(0, -1);
+      selIndex = 0;
+    } else if (key.str && !key.ctrl && !key.meta && !NON_TEXT_KEY_NAMES.has(key.name) && !key.str.startsWith('\x1B')) {
+      query += key.str;
+      selIndex = 0;
+    }
+  }
 }
 
 // Generic arrow-key option picker — View/Edit/Delete used to be one of these
@@ -1169,7 +1503,7 @@ async function listLoop() {
   for (;;) {
     const tabKey = TABS[tabIndex];
     const sKey = stateKey(tabKey, projectMode);
-    const data = scanAll(cwd, currentProjectAgentsDir());
+    const data = scanAll(cwd, currentProjectAgentsDir(), cfg);
     let rows = rowsFor(data, tabKey, projectMode, cfg);
     if (selIndex[sKey] >= rows.length) selIndex[sKey] = Math.max(0, rows.length - 1);
     const viewHeight = listViewHeight();
@@ -1244,7 +1578,23 @@ async function listLoop() {
     } else if (key.name === 'x' && data[tabKey].writable) {
       rows = rowsFor(data, tabKey, projectMode, cfg);
       const row = rows[selIndex[sKey]];
-      if (row && !row.virtual) status = await deleteAgent(row);
+      if (row && !row.virtual) {
+        status = row.linked ? untrackPluginAgent(cfg, row) : await deleteAgent(row);
+      }
+    } else if (key.str === 'u' && tabKey === 'plugin') {
+      // Track/untrack toggle — Plugin tab's own scope stays read-only
+      // (data.plugin.writable is still false, so 'e'/'x' here still do
+      // nothing), but this doesn't write to the plugin file at all, just to
+      // our own config, so it doesn't need that guard.
+      rows = rowsFor(data, tabKey, projectMode, cfg);
+      const row = rows[selIndex[sKey]];
+      if (row && !row.virtual) status = toggleTrackedPluginAgent(cfg, row);
+    } else if (key.str === '/') {
+      // Global, like '?' — doesn't depend on tab/projectMode, so no row
+      // lookup needed here. cfg is passed by reference; searchFlow's own
+      // edit/delete calls don't touch bookmarks, so nothing needs re-syncing
+      // on return.
+      await searchFlow(cwd, cwdAgentsDir, cfg);
     } else if (key.str === '?') {
       // Global — doesn't depend on tab/row, so no row lookup needed.
       await showHelp();
@@ -1295,6 +1645,8 @@ module.exports = {
   computeColumnWidths,
   truncate,
   scanAll,
+  buildSearchIndex,
+  filterSearchIndex,
   expandHome,
   configFile,
   loadConfig,

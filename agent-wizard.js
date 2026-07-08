@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 
 const ADD_AGENT_PROMPT_FILE = path.join(__dirname, 'add_agent.md');
 const ADD_AGENT_INTERACTIVE_PROMPT_FILE = path.join(__dirname, 'finish_agent_interactive.md');
@@ -261,7 +261,54 @@ const ESC = '\x1B[';
 const reverse = (s) => `${ESC}7m${s}${ESC}0m`;
 const bold = (s) => `${ESC}1m${s}${ESC}0m`;
 const dim = (s) => `${ESC}2m${s}${ESC}0m`;
+const yellow = (s) => `${ESC}33m${s}${ESC}0m`;
 const clearScreen = () => `${ESC}2J${ESC}H`;
+// Frame-start for redraws that may include inline images (kitty/iTerm).
+// Full-screen erase (ESC[2J) blanks the whole terminal — including any
+// already-placed image — before repainting, so every keystroke that
+// triggers a redraw produces a visible blank-then-repaint flash on the
+// image. Home-only + per-line clear-to-end-of-line (ESC[K) + a trailing
+// clear-to-end-of-screen (ESC[J) gets the same "stale content removed"
+// result without ever blanking pixels the image already occupies.
+const frameHome = () => `${ESC}H`;
+function finalizeFrame(out) {
+  return out.split('\n').join(`${ESC}K\n`) + `${ESC}J`;
+}
+
+// ---------------------------------------------------------------------------
+// Update notification (bottom-right corner)
+// ---------------------------------------------------------------------------
+
+let updateAvailable = false;
+const UPDATE_NOTICE_TEXT = 'update available, run --update to update';
+
+function checkForUpdate() {
+  const repoDir = __dirname;
+  if (!fs.existsSync(path.join(repoDir, '.git'))) return;
+  try {
+    const proc = spawn('git', ['-C', repoDir, 'fetch', '--quiet'], { stdio: 'ignore' });
+    proc.on('error', () => {});
+    proc.on('close', (code) => {
+      if (code !== 0) return;
+      try {
+        const local = spawnSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+        const remote = spawnSync('git', ['-C', repoDir, 'rev-parse', '@{u}'], { encoding: 'utf8' });
+        if (local.status === 0 && remote.status === 0 && local.stdout.trim() !== remote.stdout.trim()) {
+          updateAvailable = true;
+          triggerRepaint();
+        }
+      } catch {}
+    });
+  } catch {}
+}
+
+function updateNoticeEscape() {
+  if (!updateAvailable) return '';
+  const cols = process.stdout.columns || 80;
+  const rows = process.stdout.rows || 24;
+  const col = Math.max(1, cols - UPDATE_NOTICE_TEXT.length + 1);
+  return `${ESC}${rows};${col}H${yellow(UPDATE_NOTICE_TEXT)}`;
+}
 
 function supportsUnicode() {
   if (process.platform === 'win32') {
@@ -402,11 +449,7 @@ function getRecentReleaseNotes(repoDir, n) {
 }
 
 const BOX = { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─' };
-// leftPad pushes the label bar further right along the border before it
-// starts — used to shift the top border's title past the logo/divider when
-// the inline image logo is showing (see renderHeaderBox/computeLogoGutter),
-// so it reads as sitting to the right of the image rather than overlapping
-// the left corner above it.
+
 function buildLabeledBorder(leftCorner, rightCorner, label, width, leftPad) {
   if (!label) return dim(leftCorner + BOX.h.repeat(width - 2) + rightCorner);
   const pad = Math.min(Math.max(0, leftPad || 0), Math.max(0, width - 3));
@@ -540,7 +583,7 @@ function headerContentLines(data, recentNotes) {
 function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, projectMode, cfg, recentNotes, imageLogo) {
   const tabKey = TABS[tabIndex];
   const rows = rowsFor(data, tabKey, projectMode, cfg);
-  let out = clearScreen();
+  let out = frameHome();
   const projectTag = projectMode === 'bookmark-project' ? '  (bookmark project)' : '';
   const headerWidth = process.stdout.columns || 80;
   const contentLines = headerContentLines(data, recentNotes);
@@ -614,7 +657,8 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
     ) +
     '\n';
   if (status) out += '\n' + status + '\n';
-  process.stdout.write(out);
+  out += updateNoticeEscape();
+  process.stdout.write(finalizeFrame(out));
 }
 
 function renderSearch(query, results, selIndex, scrollOffset, viewHeight, status) {
@@ -652,11 +696,12 @@ function renderSearch(query, results, selIndex, scrollOffset, viewHeight, status
     dim('type to filter   ↑/↓ move   Enter run   Tab actions   Esc back' + scrollHint) +
     '\n';
   if (status) out += '\n' + status + '\n';
+  out += updateNoticeEscape();
   process.stdout.write(out);
 }
 
 function renderMenu(title, subtitleLines, options, idx, spellSlot) {
-  let out = clearScreen() + renderSpellEscape(spellSlot);
+  let out = frameHome() + renderSpellEscape(spellSlot);
   out += bold(title) + '\n';
   for (const line of subtitleLines) out += dim(line) + '\n';
   out += '\n';
@@ -665,7 +710,7 @@ function renderMenu(title, subtitleLines, options, idx, spellSlot) {
     out += (i === idx ? reverse(line) : line) + '\n';
   });
   out += '\n' + dim('↑/↓ move   Enter select   Esc back') + '\n';
-  process.stdout.write(out);
+  process.stdout.write(finalizeFrame(out));
 }
 
 function wrapText(raw, width) {
@@ -724,21 +769,28 @@ const NON_TEXT_KEY_NAMES = new Set([
 
 async function askLine(promptText, spellSlot) {
   let buffer = '';
-  for (;;) {
-    let out = clearScreen() + renderSpellEscape(spellSlot);
-    out += bold('Agent Wizard') + '\n\n';
-    out += promptText + buffer + reverse(' ') + '\n\n';
-    out += dim('Enter confirm   Esc cancel/clear') + '\n';
-    process.stdout.write(out);
-    setRaw(true);
-    const key = await waitForKey();
-    if (key.ctrl && key.name === 'c') process.exit(0);
-    else if (key.name === 'return' || key.name === 'enter') return buffer.trim();
-    else if (key.name === 'escape') return '';
-    else if (key.name === 'backspace') buffer = buffer.slice(0, -1);
-    else if (key.str && !key.ctrl && !key.meta && !NON_TEXT_KEY_NAMES.has(key.name) && !key.str.startsWith('\x1B')) {
-      buffer += key.str;
+
+  process.stdout.write(clearScreen());
+  try {
+    for (;;) {
+      let out = frameHome() + renderSpellEscape(spellSlot);
+      out += bold('Agent Wizard') + '\n\n';
+      out += promptText + buffer + reverse(' ') + '\n\n';
+      out += dim('Enter confirm   Esc cancel/clear') + '\n';
+      process.stdout.write(finalizeFrame(out));
+      setRaw(true);
+      const key = await waitForKey();
+      if (key.ctrl && key.name === 'c') process.exit(0);
+      else if (key.name === 'return' || key.name === 'enter') return buffer.trim();
+      else if (key.name === 'escape') return '';
+      else if (key.name === 'backspace') buffer = buffer.slice(0, -1);
+      else if (key.str && !key.ctrl && !key.meta && !NON_TEXT_KEY_NAMES.has(key.name) && !key.str.startsWith('\x1B')) {
+        buffer += key.str;
+      }
     }
+  } finally {
+
+    process.stdout.write(clearScreen());
   }
 }
 
@@ -748,9 +800,7 @@ function openEditor(filePath) {
   exitAltScreen();
   setRaw(false);
   pauseKeyCapture();
-  // shell: true on win32 so .cmd/.bat editor shims (e.g. VS Code's `code`
-  // launcher) resolve — spawnSync without a shell can fail to find these
-  // on Windows even when the editor works fine from an interactive prompt.
+
   const res = spawnSync(editor, [filePath], { stdio: 'inherit', shell: process.platform === 'win32' });
   resumeKeyCapture();
   enterAltScreen();
@@ -948,6 +998,7 @@ async function showHelp() {
   for (;;) {
     const rows = process.stdout.rows || 24;
     const viewHeight = Math.max(3, rows - 5);
+
     let out = clearScreen();
     out += bold('Writing a good agent — help') + '\n\n';
     out += lines.slice(scroll, scroll + viewHeight).join('\n') + '\n';
@@ -971,9 +1022,7 @@ function runAgentSession(agent) {
   process.stdout.write(
     `\nStarting claude --agent ${agent.name} (exit the session normally to return to the wizard)...\n\n`
   );
-  // shell: true on win32 — global npm installs commonly expose `claude` as a
-  // .cmd shim, which spawnSync can fail to resolve without a shell even
-  // though it's on PATH.
+
   const res = spawnSync('claude', ['--agent', agent.name], {
     stdio: 'inherit',
     shell: process.platform === 'win32',
@@ -1069,15 +1118,22 @@ async function searchFlow(cwd, cwdAgentsDir, cfg) {
 
 async function pickOption(title, subtitleLines, options, spellSlot) {
   let idx = 0;
-  for (;;) {
-    renderMenu(title, subtitleLines, options, idx, spellSlot);
-    setRaw(true);
-    const key = await waitForKey();
-    if (key.ctrl && key.name === 'c') process.exit(0);
-    else if (key.name === 'up') idx = (idx + options.length - 1) % options.length;
-    else if (key.name === 'down') idx = (idx + 1) % options.length;
-    else if (key.name === 'escape' || key.name === 'q') return null;
-    else if (key.name === 'return') return options[idx];
+
+  process.stdout.write(clearScreen());
+  try {
+    for (;;) {
+      renderMenu(title, subtitleLines, options, idx, spellSlot);
+      setRaw(true);
+      const key = await waitForKey();
+      if (key.ctrl && key.name === 'c') process.exit(0);
+      else if (key.name === 'up') idx = (idx + options.length - 1) % options.length;
+      else if (key.name === 'down') idx = (idx + 1) % options.length;
+      else if (key.name === 'escape' || key.name === 'q') return null;
+      else if (key.name === 'return') return options[idx];
+    }
+  } finally {
+
+    process.stdout.write(clearScreen());
   }
 }
 
@@ -1142,14 +1198,12 @@ function renderStatusScreen(label) {
 }
 
 function runClaudeGenerate(promptText, { systemPrompt, systemPromptFile, label } = {}) {
-  // stdio stays piped (not 'inherit'), so this call never touches the tty —
-  // no need to drop out of the alt screen / raw mode for it, just repaint
-  // a status screen in place and stay in the wizard's UI.
+
   renderStatusScreen(label || 'Calling claude...');
   const args = ['-p', promptText, '--tools', ''];
   if (systemPromptFile) args.push('--system-prompt-file', systemPromptFile);
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
-  // shell: true on win32 — see runAgentSession for why (.cmd shim resolution).
+
   const res = spawnSync('claude', args, {
     encoding: 'utf8',
     timeout: 120000,
@@ -1211,7 +1265,7 @@ function runClaudeInteractive(promptText, systemPromptFile) {
     '\nStarting an interactive claude session to finish this agent together ' +
       '(exit the session normally, e.g. Ctrl+D, to return to the wizard)...\n\n'
   );
-  // shell: true on win32 — see runAgentSession for why (.cmd shim resolution).
+
   const res = spawnSync('claude', ['--system-prompt-file', systemPromptFile, promptText], {
     stdio: 'inherit',
     shell: process.platform === 'win32',
@@ -1354,6 +1408,8 @@ async function listLoop() {
   const scrollOffset = { project: 0, user: 0, plugin: 0, projectBookmarks: 0, projectBookmarkProject: 0 };
   let status = '';
 
+  process.stdout.write(clearScreen());
+
   function currentProjectAgentsDir() {
     if (projectMode === 'bookmark-project' && selectedBookmarkRoot) {
       return path.join(selectedBookmarkRoot, '.claude', 'agents');
@@ -1471,12 +1527,6 @@ function runUpdate() {
   process.exit(res.status ?? 0);
 }
 
-// Windows Terminal (ConPTY) covers every escape sequence this tool relies on
-// — raw mode, alt-screen, cursor positioning, colors — except the inline
-// image protocols (kitty/iTerm), which it doesn't implement. WezTerm covers
-// those too. Neither is required to run the tool (everything still degrades
-// cleanly — see detectImageProtocol), so this is a one-time heads-up, not a
-// hard gate. Set AGENT_WIZARD_SKIP_TERM_CHECK to silence it permanently.
 function checkWindowsTerminalRecommendation() {
   if (process.platform !== 'win32') return Promise.resolve();
   if (process.env.AGENT_WIZARD_SKIP_TERM_CHECK) return Promise.resolve();
@@ -1516,10 +1566,14 @@ async function main() {
     process.exit(1);
   }
   await checkWindowsTerminalRecommendation();
+  checkForUpdate();
   readline.emitKeypressEvents(process.stdin);
   resumeKeyCapture();
   enterAltScreen();
-  process.stdout.on('resize', triggerRepaint);
+  process.stdout.on('resize', () => {
+    process.stdout.write(clearScreen());
+    triggerRepaint();
+  });
   try {
     await listLoop();
   } finally {

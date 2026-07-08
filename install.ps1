@@ -1,4 +1,4 @@
-# Installer for agents-wizard on Windows. Symlinks agents-wizard.js into a
+# Installer for agent-wizard on Windows. Symlinks agent-wizard.js into a
 # bin dir on PATH so `lsagents` runs from anywhere.
 #
 # Usage:
@@ -17,10 +17,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Target = Join-Path $ScriptDir "agents-wizard.js"
+$Target = Join-Path $ScriptDir "agent-wizard.js"
 
 if (-not (Test-Path $Target)) {
-    Write-Error "agents-wizard.js not found in $ScriptDir"
+    Write-Error "agent-wizard.js not found in $ScriptDir"
     exit 1
 }
 

@@ -1,15 +1,15 @@
 #!/bin/bash
-# Installer for agents-wizard. Symlinks agents-wizard.js into a bin dir on
+# Installer for agent-wizard. Symlinks agent-wizard.js into a bin dir on
 # PATH so `lsagents` runs from anywhere.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET="$SCRIPT_DIR/agents-wizard.js"
+TARGET="$SCRIPT_DIR/agent-wizard.js"
 BIN_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 LINK="$BIN_DIR/lsagents"
 
 if [ ! -f "$TARGET" ]; then
-  echo "error: agents-wizard.js not found in $SCRIPT_DIR" >&2
+  echo "error: agent-wizard.js not found in $SCRIPT_DIR" >&2
   exit 1
 fi
 

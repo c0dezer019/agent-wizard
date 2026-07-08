@@ -1,8 +1,12 @@
-# agents-wizard
+# agent-wizard
 
 Terminal UI for managing Claude Code subagents (project, user, and plugin scopes). Plain Node script, no npm dependencies — uses only built-in `fs`/`path`/`os`/`readline`/`child_process`.
 
 Real arrow-key/Enter navigation needs a program that owns the terminal directly, which Claude Code slash commands/skills can't do (they're just text expanded into the conversation). So this runs as a standalone script instead.
+
+![agent-wizard screenshot](screenshot.svg)
+
+Every screen opens with a header box — project/user directories currently in view, plus up to the last 4 entries from [`RELEASE_NOTES.md`](RELEASE_NOTES.md), read once at startup. Same idea as Claude Code's own startup banner, just redrawn on every frame instead of shown once, since this TUI already repaints the whole screen on every keypress.
 
 ## Install
 
@@ -12,7 +16,7 @@ Real arrow-key/Enter navigation needs a program that owns the terminal directly,
 ./install.sh
 ```
 
-One script, works on both. Symlinks `agents-wizard.js` to `~/.local/bin/lsagents` (override with `INSTALL_DIR=/some/dir ./install.sh`). Add that dir to `PATH` if the installer warns it's missing (it points at `~/.zshrc` or `~/.bashrc`/`~/.bash_profile` depending on your `$SHELL`), then run `lsagents`.
+One script, works on both. Symlinks `agent-wizard.js` to `~/.local/bin/lsagents` (override with `INSTALL_DIR=/some/dir ./install.sh`). Add that dir to `PATH` if the installer warns it's missing (it points at `~/.zshrc` or `~/.bashrc`/`~/.bash_profile` depending on your `$SHELL`), then run `lsagents`.
 
 **Windows (PowerShell):**
 
@@ -25,9 +29,9 @@ Symlinks into `%USERPROFILE%\bin\lsagents.cmd` (override with `.\install.ps1 -In
 Without installing, run directly:
 
 ```bash
-node agents-wizard.js
+node agent-wizard.js
 # or, macOS/Linux only
-chmod +x agents-wizard.js && ./agents-wizard.js
+chmod +x agent-wizard.js && ./agent-wizard.js
 ```
 
 ## Update
@@ -36,7 +40,9 @@ chmod +x agents-wizard.js && ./agents-wizard.js
 lsagents --update
 ```
 
-Runs `git pull` in this checkout. Since the installed binary is a symlink (or, on Windows without Developer Mode/admin, a shim pointing straight at `agents-wizard.js` — see install.ps1), pulling is all that's needed; no need to re-run the installer. Equivalent to `git pull` directly from the `agents-wizard` directory. Doesn't require a TTY, so it works piped or scripted.
+Runs `git pull` in this checkout. Since the installed binary is a symlink (or, on Windows without Developer Mode/admin, a shim pointing straight at `agent-wizard.js` — see install.ps1), pulling is all that's needed; no need to re-run the installer. Equivalent to `git pull` directly from the `agent-wizard` directory. Doesn't require a TTY, so it works piped or scripted.
+
+> Renamed from `agents-wizard` (plural) on 2026-07-08 — filenames, the `~/.claude/agent-wizard/config.json` config path, and on-screen titles all changed. If your installed `lsagents` still points at a file called `agents-wizard.js`, re-run the installer after pulling; old bookmarks/tracked-agent config migrates automatically on first run.
 
 ## Controls
 
@@ -61,11 +67,11 @@ Runs `git pull` in this checkout. Since the installed binary is a symlink (or, o
 
 - **Project** — three states:
   - `cwd`: `<cwd>/.claude/agents/`, cwd captured once at startup (no walking up to parent dirs). Writable.
-  - `bookmarks`: flat list of remembered project folders (`~/.claude/agents-wizard/config.json`). `d` removes a bookmark (non-destructive, no confirmation).
+  - `bookmarks`: flat list of remembered project folders (`~/.claude/agent-wizard/config.json`). `d` removes a bookmark (non-destructive, no confirmation).
   - `bookmark-project`: one bookmarked project's agents, same writable list as cwd. `Esc` → bookmarks list, `b` → cwd.
   - `b` resumes whichever bookmark state you last left; backing all the way out forgets it, so the next `b` from cwd goes to the list.
 - **User** — `~/.claude/agents/` (personal, all projects). Writable. Also shows any plugin agents you've "tracked" (see Plugin below), mixed into the same list — they're real rows here, with the same Enter/`v`/`e`/`x`.
-- **Plugin** — `~/.claude/plugins/marketplaces/**/agents/*.md`. All agents from plugins. Some plugins may include an agent with same name as another. Differentiated with a column that shows plugin it belongs to. Read-only in this tab (`e`/`x` do nothing here) — but `u` tracks/untracks the highlighted agent into the User tab (marked `★` here once tracked), for when you own that plugin/marketplace checkout and want to edit it directly. Tracking only remembers the file path (`~/.claude/agents-wizard/config.json`, `trackedPluginAgents`) — it does **not** copy the file into `~/.claude/agents/`, so editing a tracked agent from the User tab edits the plugin's real file in place. Only do this for a plugin you own or are developing; untracking (`x` on the linked row, or `u` again from the Plugin tab) just forgets the pointer and never touches the file.
+- **Plugin** — `~/.claude/plugins/marketplaces/**/agents/*.md`. All agents from plugins. Some plugins may include an agent with same name as another. Differentiated with a column that shows plugin it belongs to. Read-only in this tab (`e`/`x` do nothing here) — but `u` tracks/untracks the highlighted agent into the User tab (marked `★` here once tracked), for when you own that plugin/marketplace checkout and want to edit it directly. Tracking only remembers the file path (`~/.claude/agent-wizard/config.json`, `trackedPluginAgents`) — it does **not** copy the file into `~/.claude/agents/`, so editing a tracked agent from the User tab edits the plugin's real file in place. Only do this for a plugin you own or are developing; untracking (`x` on the linked row, or `u` again from the Plugin tab) just forgets the pointer and never touches the file.
 
 ## Creating an agent
 
@@ -79,7 +85,8 @@ Falls back to the manual template if `claude` CLI is missing, the `-p` call fail
 
 ## Files
 
-- `agents-wizard.js` — the script
+- `agent-wizard.js` — the script
+- `RELEASE_NOTES.md` — hand-maintained changelog; the TUI's header box reads its first 4 lines on startup. Add an entry here alongside any user-visible change
 - `install.sh` — macOS/Linux installer (symlinks into a bin dir on `PATH`)
 - `install.ps1` — Windows installer (symlink, or shim fallback without Developer Mode/admin)
 - `add_agent.md` — system prompt for the non-interactive auto-draft path

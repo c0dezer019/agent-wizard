@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * Agents Wizard — standalone terminal UI for managing Claude Code subagents.
+ * Agent Wizard — standalone terminal UI for managing Claude Code subagents.
  *
  * Real arrow-key / Enter navigation is only possible as a program that owns
  * the terminal directly. Claude Code's own slash commands/skills are just
@@ -10,8 +10,8 @@
  * or draw into Claude Code's UI. So this is a plain Node script you run
  * yourself:
  *
- *   node agents-wizard.js
- *   (or: chmod +x agents-wizard.js && ./agents-wizard.js)
+ *   node agent-wizard.js
+ *   (or: chmod +x agent-wizard.js && ./agent-wizard.js)
  *
  * No npm dependencies — uses only Node's built-in fs/path/os/readline/child_process.
  *
@@ -33,6 +33,15 @@
  * call fails, or an interactive session ends without writing the file.
  * Either way, $EDITOR still opens afterward so you can review/adjust before
  * it's final.
+ *
+ * Every screen opens with a ✦-logo'd, bordered header box (see
+ * renderHeaderBox) — project/user directories currently in view, plus up to
+ * the last 4 entries from this tool's own RELEASE_NOTES.md, read once at
+ * startup and not re-read on every repaint (see getRecentReleaseNotes). Same
+ * idea as Claude Code's own startup banner, just persistent across every
+ * frame instead of a one-time splash, since this TUI already clears and
+ * redraws the whole screen on every keypress anyway (see
+ * clearScreen/renderList).
  *
  * Controls:
  *   ← / →   switch tabs (Project / User / Plugin)
@@ -88,7 +97,7 @@
  *                                project folder — same dir as User, very
  *                                confusing).
  *               bookmarks      — a flat list of remembered project folders
- *                                (~/.claude/agents-wizard/config.json).
+ *                                (~/.claude/agent-wizard/config.json).
  *                                Enter on one moves to bookmark-project
  *                                (below). 'd' removes the highlighted
  *                                bookmark (just the shortcut, not the
@@ -119,7 +128,7 @@
  *             into the User tab (marked with a ★ here once tracked), for
  *             when you own that plugin/marketplace checkout yourself and
  *             want to edit it directly. Tracking only remembers the file
- *             path in config (~/.claude/agents-wizard/config.json,
+ *             path in config (~/.claude/agent-wizard/config.json,
  *             trackedPluginAgents) — it does NOT copy the file into
  *             ~/.claude/agents/, so editing a tracked agent from the User
  *             tab edits the plugin's real file in place. That's the point
@@ -182,7 +191,28 @@ function expandHome(p) {
 }
 
 function configFile() {
+  return path.join(os.homedir(), '.claude', 'agent-wizard', 'config.json');
+}
+
+// Pre-rename config lived under 'agents-wizard' (plural). One-time migration:
+// if the new path doesn't exist yet but the old one does, copy it over so
+// existing bookmarks/trackedPluginAgents survive the rename. Leaves the old
+// file in place rather than deleting it, in case of rollback.
+function legacyConfigFile() {
   return path.join(os.homedir(), '.claude', 'agents-wizard', 'config.json');
+}
+
+function migrateLegacyConfig() {
+  const target = configFile();
+  const legacy = legacyConfigFile();
+  try {
+    if (!fs.existsSync(target) && fs.existsSync(legacy)) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(legacy, target);
+    }
+  } catch {
+    // Best-effort; loadConfig's own try/catch handles a still-missing file.
+  }
 }
 
 // trackedPluginAgents: absolute file paths of plugin-tab agents the user has
@@ -192,6 +222,7 @@ function configFile() {
 // place (for someone developing or forking their own plugin locally), not
 // forking content into ~/.claude/agents the way "+ New agent" does.
 function loadConfig() {
+  migrateLegacyConfig();
   try {
     const raw = fs.readFileSync(configFile(), 'utf8');
     const data = JSON.parse(raw);
@@ -476,6 +507,69 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+// One-time read of RELEASE_NOTES.md for the header box's "recent changes"
+// lines — this tool's own curated changelog (newest entry first, one line
+// per change; see RELEASE_NOTES.md for the exact format/maintenance
+// convention), not raw git history. Read once at startup (see listLoop) and
+// passed down through renderList/listViewHeight rather than re-read on every
+// repaint: the file can't change mid-session any more than agent-wizard's
+// own code can (the only thing that updates either, `--update`, is a
+// separate non-interactive invocation — see runUpdate), so re-reading it on
+// every keypress would just be wasted I/O. __dirname is used rather than cwd
+// because this is about the tool's own checkout, not whatever project the
+// wizard happens to be pointed at (same reasoning runUpdate already uses
+// __dirname for). Returns [] — not a placeholder array — when the file is
+// missing/empty, so the caller decides how to present that rather than
+// baking wording into the reader itself.
+function getRecentReleaseNotes(repoDir, n) {
+  let raw;
+  try {
+    raw = fs.readFileSync(path.join(repoDir, 'RELEASE_NOTES.md'), 'utf8');
+  } catch {
+    return [];
+  }
+  return raw
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('- '))
+    .slice(0, n)
+    .map((line) => line.slice(2).trim());
+}
+
+// Boxed header drawn fresh every frame at the top of renderList, replacing
+// the plain "Agent Wizard" title + "project/user" line the TUI used to
+// open with — same information (plus recent-changes lines), just framed the
+// way Claude Code's own startup banner frames its cwd/tips. Width tracks the
+// terminal like every other layout calc in this file (computeColumnWidths,
+// wrapText), capped at 100 so the box doesn't stretch into unreadable
+// full-width lines on a very wide terminal. contentLines is pre-truncated
+// per line to fit inside the border rather than wrapped — these are already
+// short, single-fact lines (a directory, a changelog entry), so truncating
+// with an ellipsis reads better here than mid-word wrapping would.
+//
+// Every line this function returns must be exactly `width` characters wide
+// (ANSI codes aside) or the box's right edge visibly staggers between rows —
+// that's what broke the first version of this box: the top border was built
+// as tl + h + titleBar + dashes + tr, i.e. one extra leading '─' after the
+// corner that the `dashes` count never accounted for, making the top line
+// one character *longer* than every content line and the bottom border. Kept
+// the leading dash (`╭─ Title ──...──╮` reads better than `╭ Title ──...╮`)
+// but folded it into the width budget: dashes = width - 3 - titleBar.length,
+// not width - 2. Bottom border (bl + h.repeat(width - 2) + br) and content
+// lines ('│ ' + inner.padEnd(inner) + ' │', inner = width - 4) were already
+// correct — both come out to exactly `width` — so only the top line's
+// formula needed the fix.
+const BOX = { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─' };
+function renderHeaderBox(title, contentLines, termWidth) {
+  const width = Math.max(24, Math.min(termWidth, 100));
+  const inner = width - 4; // '│ ' + content + ' │'
+  const titleBar = ` ${title} `;
+  const dashes = Math.max(0, width - 3 - titleBar.length); // -1 corner, -1 leading dash, -1 trailing corner
+  const top = dim(BOX.tl + BOX.h) + bold(titleBar) + dim(BOX.h.repeat(dashes) + BOX.tr);
+  const bottom = dim(BOX.bl + BOX.h.repeat(width - 2) + BOX.br);
+  const mid = contentLines.map((l) => dim('│ ') + truncate(l, inner).padEnd(inner) + dim(' │'));
+  return [top, ...mid, bottom];
+}
+
 // Column widths for the agent list re-derive from the live terminal width on
 // every render (renderList is re-invoked on every keypress and on resize --
 // see triggerRepaint/RESIZE_KEY), so name/source shrink or grow with the
@@ -599,12 +693,19 @@ function computeViewport(rowsLength, selIndex, prevScroll, viewHeight) {
   return Math.min(Math.max(scroll, 0), maxScroll);
 }
 
-// Fixed chrome around the scrollable row list: title(1) + scope line(1) +
+// Fixed chrome around the scrollable row list: header box (2 border lines +
+// headerLineCount content lines — the count varies with how many
+// RELEASE_NOTES.md entries were found at startup, see getRecentReleaseNotes/
+// listLoop, so it's a parameter rather than a literal here; deliberately
+// named differently from the headerContentLines() function below even
+// though it's that function's .length, to avoid a same-named
+// function-vs-parameter shadowing that'd read like a bug at a glance) +
 // blank(1) + tabs(1) + blank(1) + blank+footer(2) + reserve for an optional
-// status message(2) = 9 lines. Keep in sync with renderList's literal output.
-function listViewHeight() {
+// status message(2). Keep in sync with renderList's literal output.
+function listViewHeight(headerLineCount) {
   const termRows = process.stdout.rows || 24;
-  return Math.max(3, termRows - 9);
+  const chrome = 2 + headerLineCount + 1 + 1 + 1 + 2 + 2;
+  return Math.max(3, termRows - chrome);
 }
 
 // projectMode is only meaningful for the 'project' tab: 'cwd' shows the
@@ -623,13 +724,34 @@ function rowsFor(data, tabKey, projectMode, cfg) {
   return rows;
 }
 
-function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, projectMode, cfg) {
+// Builds the header box's content lines (everything between the borders) —
+// split out from renderList so listLoop can compute the exact same line
+// count up front for listViewHeight, without duplicating the "how many
+// lines does the recent-changes block take" logic in two places. Always at
+// least 2 lines: the project/user line, plus either up to 4 changelog
+// entries or one fallback line if RELEASE_NOTES.md wasn't found/empty —
+// recentNotes.length is fixed for the whole session (read once at startup),
+// so this returns the same count on every call for a given recentNotes.
+function headerContentLines(data, projectTag, recentNotes) {
+  const projectLine = `project: ${data.project.dir}${projectTag}   user: ${data.user.dir}`;
+  const noteLines = recentNotes.length
+    ? recentNotes.map((note, i) => `${i === 0 ? 'recent changes: ' : '                 '}${note}`)
+    : ['recent changes: (no RELEASE_NOTES.md found in this checkout)'];
+  return [projectLine, ...noteLines];
+}
+
+function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, projectMode, cfg, recentNotes) {
   const tabKey = TABS[tabIndex];
   const rows = rowsFor(data, tabKey, projectMode, cfg);
   let out = clearScreen();
-  out += bold('Agents Wizard') + '\n';
   const projectTag = projectMode === 'bookmark-project' ? '  (bookmark project)' : '';
-  out += dim(`project: ${data.project.dir}${projectTag}   user: ${data.user.dir}`) + '\n\n';
+  const headerWidth = process.stdout.columns || 80;
+  // ✦ before the title is the closest thing this TUI has to a logo — a
+  // single-column glyph (unlike an emoji, which can render 2 columns wide in
+  // some terminals and throw off the box-width math above) so it's safe to
+  // fold straight into renderHeaderBox's own width accounting.
+  const headerLines = renderHeaderBox('✦ Agent Wizard', headerContentLines(data, projectTag, recentNotes), headerWidth);
+  out += headerLines.join('\n') + '\n\n';
 
   out +=
     TABS.map((t, i) => {
@@ -707,7 +829,7 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
 // plugin source) inline instead of relying on a tab to say where it's from.
 function renderSearch(query, results, selIndex, scrollOffset, viewHeight, status) {
   let out = clearScreen();
-  out += bold('Agents Wizard — search') + '\n\n';
+  out += bold('Agent Wizard — search') + '\n\n';
   out += `Search: ${query}${reverse(' ')}` + '\n\n';
 
   if (results.length === 0) {
@@ -843,7 +965,7 @@ async function askLine(promptText) {
   let buffer = '';
   for (;;) {
     let out = clearScreen();
-    out += bold('Agents Wizard') + '\n\n';
+    out += bold('Agent Wizard') + '\n\n';
     out += promptText + buffer + reverse(' ') + '\n\n';
     out += dim('Enter confirm   Esc cancel/clear') + '\n';
     process.stdout.write(out);
@@ -1536,6 +1658,10 @@ function stateKey(tabKey, projectMode) {
 async function listLoop() {
   const cwd = process.cwd();
   const cfg = loadConfig();
+  // See getRecentReleaseNotes — up to 4 lines from this tool's own
+  // RELEASE_NOTES.md, read once for the whole session rather than on every
+  // repaint.
+  const recentNotes = getRecentReleaseNotes(__dirname, 4);
   // Fixed for the whole session — nothing in bookmarks mode is allowed to
   // overwrite this. (Previous version pointed a single mutable
   // "activeProjectDir" at whatever was last entered, which meant entering a
@@ -1574,10 +1700,16 @@ async function listLoop() {
     const data = scanAll(cwd, currentProjectAgentsDir(), cfg);
     let rows = rowsFor(data, tabKey, projectMode, cfg);
     if (selIndex[sKey] >= rows.length) selIndex[sKey] = Math.max(0, rows.length - 1);
-    const viewHeight = listViewHeight();
+    // Header content line count varies with recentNotes (fixed for the
+    // session, see above) but not with tabKey/projectMode, so this is cheap
+    // to recompute every frame — and doing so via the same
+    // headerContentLines helper renderList itself calls means the two can
+    // never drift out of sync the way a second hand-counted formula could.
+    const projectTag = projectMode === 'bookmark-project' ? '  (bookmark project)' : '';
+    const viewHeight = listViewHeight(headerContentLines(data, projectTag, recentNotes).length);
     scrollOffset[sKey] = computeViewport(rows.length, selIndex[sKey], scrollOffset[sKey], viewHeight);
 
-    renderList(data, tabIndex, selIndex[sKey], scrollOffset[sKey], viewHeight, status, projectMode, cfg);
+    renderList(data, tabIndex, selIndex[sKey], scrollOffset[sKey], viewHeight, status, projectMode, cfg, recentNotes);
     status = '';
 
     setRaw(true);
@@ -1690,7 +1822,7 @@ function runUpdate() {
     console.error(`error: ${repoDir} is not a git checkout (no .git found) — can't update.`);
     process.exit(1);
   }
-  console.log(`Updating agents-wizard in ${repoDir}...`);
+  console.log(`Updating agent-wizard in ${repoDir}...`);
   const res = spawnSync('git', ['-C', repoDir, 'pull'], { stdio: 'inherit' });
   if (res.error) {
     console.error(`error: failed to run git: ${res.error.message}`);
@@ -1701,7 +1833,7 @@ function runUpdate() {
 
 async function main() {
   if (!process.stdin.isTTY) {
-    console.error('agents-wizard needs an interactive terminal (TTY). Run it directly, not piped.');
+    console.error('agent-wizard needs an interactive terminal (TTY). Run it directly, not piped.');
     process.exit(1);
   }
   readline.emitKeypressEvents(process.stdin);

@@ -1439,6 +1439,10 @@ TODO: write the system prompt / instructions for this agent here.
 `;
 }
 
+function renderStatusScreen(label) {
+  process.stdout.write(`${clearScreen()}\n${label}\n`);
+}
+
 // Runs `claude -p` with tool use disabled (--tools "") — this is a pure
 // text-in/text-out drafting call, not an agentic task, and forcing no tools
 // means no permission prompts to hang on in this non-interactive context.
@@ -1446,16 +1450,14 @@ TODO: write the system prompt / instructions for this agent here.
 // arbitrary user-typed text (role/seniority/tasks) can't break out via quotes
 // or shell metacharacters — there's no shell to break out of.
 function runClaudeGenerate(promptText, { systemPrompt, systemPromptFile, label } = {}) {
-  exitAltScreen();
-  setRaw(false);
-  pauseKeyCapture();
-  process.stdout.write(`\n${label || 'Calling claude...'}\n`);
+  // stdio stays piped (not 'inherit'), so this call never touches the tty —
+  // no need to drop out of the alt screen / raw mode for it, just repaint
+  // a status screen in place and stay in the wizard's UI.
+  renderStatusScreen(label || 'Calling claude...');
   const args = ['-p', promptText, '--tools', ''];
   if (systemPromptFile) args.push('--system-prompt-file', systemPromptFile);
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
   const res = spawnSync('claude', args, { encoding: 'utf8', timeout: 120000 });
-  resumeKeyCapture();
-  enterAltScreen();
   return res;
 }
 

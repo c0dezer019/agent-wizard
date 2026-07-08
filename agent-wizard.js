@@ -17,6 +17,7 @@ const {
   scanAll,
   buildSearchIndex,
   filterSearchIndex,
+  excludeBookmarkMatch,
 } = require("./lib/scan");
 const { clearScreen } = require("./lib/theme");
 const {
@@ -71,14 +72,14 @@ function stateKey(tabKey, projectMode) {
 }
 
 async function listLoop() {
-  const cwd = process.cwd();
+  let cwd = process.cwd();
   const cfg = loadConfig();
   const recentNotes = getRecentReleaseNotes(__dirname, 4);
   const protocol = detectImageProtocol();
   const logoBase64 = protocol ? loadLogoBase64(__dirname) : null;
   const imageLogo = logoBase64 ? { protocol, base64: logoBase64 } : null;
   const spellBase64 = protocol ? loadSpellBase64(__dirname) : null;
-  const cwdAgentsDir = path.join(cwd, ".claude", "agents");
+  let cwdAgentsDir = path.join(cwd, ".claude", "agents");
   let selectedBookmarkRoot = null;
   let projectMode = "cwd";
   let tabIndex = 0;
@@ -114,6 +115,21 @@ async function listLoop() {
     }
     selectedBookmarkRoot = root;
     projectMode = "bookmark-project";
+  }
+
+  function jumpToProject(root) {
+    try {
+      process.chdir(root);
+    } catch (err) {
+      return `Failed to jump to ${root}: ${err.message}`;
+    }
+    cwd = process.cwd();
+    cwdAgentsDir = path.join(cwd, ".claude", "agents");
+    selectedBookmarkRoot = null;
+    projectMode = "cwd";
+    selIndex.project = 0;
+    scrollOffset.project = 0;
+    return `Jumped to ${cwd}`;
   }
 
   for (;;) {
@@ -180,11 +196,23 @@ async function listLoop() {
     ) {
       const row = rows[selIndex[sKey]];
       if (row && row.kind === "bookmark") {
-        cfg.bookmarks = cfg.bookmarks.filter((b) => b !== row.root);
+        if (row.pattern) {
+          excludeBookmarkMatch(cfg, row.pattern, row.root);
+          status = `Removed ${row.root} from ${row.pattern}`;
+        } else {
+          cfg.bookmarks = cfg.bookmarks.filter((b) => b !== row.root);
+          status = `Removed bookmark: ${row.root}`;
+        }
         saveConfig(cfg);
-        status = `Removed bookmark: ${row.root}`;
         if (row.root === selectedBookmarkRoot) selectedBookmarkRoot = null;
       }
+    } else if (
+      key.name === "g" &&
+      tabKey === "project" &&
+      projectMode === "bookmarks"
+    ) {
+      const row = rows[selIndex[sKey]];
+      if (row && row.kind === "bookmark") status = jumpToProject(row.root);
     } else if (key.name === "return") {
       rows = rowsFor(data, tabKey, projectMode, cfg);
       const row = rows[selIndex[sKey]];
@@ -192,7 +220,7 @@ async function listLoop() {
         if (tabKey === "project" && projectMode === "bookmarks") {
           if (row.kind === "add-bookmark") {
             const picked = await addProjectFolder(cwd, cfg);
-            if (picked) enterBookmarkProject(picked);
+            if (picked && !picked.isGlob) enterBookmarkProject(picked.root);
           } else if (row.kind === "bookmark") {
             enterBookmarkProject(row.root);
           }

@@ -6,6 +6,7 @@ The user's opening message gives you the starting point:
 - `Agent name`: the exact identifier for the `name:` frontmatter field. Don't alter it.
 - `Description`: an initial draft of the `description:` field — the delegation trigger Claude reads to decide when to hand off to this subagent. Treat it as a starting point you can refine together with the user, not a fixed value.
 - `Role`, `Seniority`, `General tasks`: the raw inputs the description was drafted from.
+- `Guidelines or restrictions`: constraints, style rules, or things the agent must avoid, given by the user. May be "(none given)". When present, weave these into the system prompt body as explicit, binding rules; confirm with the user if any seem to conflict with the role or tasks.
 
 ## What to do
 

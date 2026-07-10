@@ -6,6 +6,7 @@ The user turn gives you these fields:
 - `Agent name`: the exact identifier to use verbatim as the `name:` field. Do not alter it.
 - `Description`: a one-sentence trigger description to use as the `description:` field. You may tighten the wording slightly, but keep its meaning and don't strip out the specifics that make it a useful trigger.
 - `Role`, `Seniority`, `General tasks`: the raw inputs the description was drafted from. Use these to write a genuinely specific system prompt body — not generic boilerplate.
+- `Guidelines or restrictions`: constraints, style rules, or things the agent must avoid. May be "(none given)". When present, weave these into the system prompt body as explicit, binding rules (a short "Guidelines" section is fine) — don't soften or drop them.
 
 ## Output format
 

@@ -29,7 +29,7 @@ const {
   triggerRepaint,
   resumeKeyCapture,
 } = require("./lib/keys");
-const { checkForUpdate } = require("./lib/update-notice");
+const { checkForUpdate, pruneStaleLocalTags } = require("./lib/update-notice");
 const { computeVersion } = require("./lib/version");
 const {
   detectImageProtocol,
@@ -298,6 +298,7 @@ function runUpdate() {
     console.error(`error: failed to run git: ${fetchRes.error.message}`);
     process.exit(1);
   }
+  pruneStaleLocalTags(repoDir);
   const pullArgs = branch
     ? ["-C", repoDir, "pull", "origin", branch]
     : ["-C", repoDir, "pull"];

@@ -290,9 +290,17 @@ function runUpdate() {
     { encoding: "utf8" },
   );
   const branch = branchRes.status === 0 ? branchRes.stdout.trim() : "";
+  const fetchArgs = branch
+    ? ["-C", repoDir, "fetch", "--tags", "origin", branch]
+    : ["-C", repoDir, "fetch", "--tags"];
+  const fetchRes = spawnSync("git", fetchArgs, { stdio: "inherit" });
+  if (fetchRes.error) {
+    console.error(`error: failed to run git: ${fetchRes.error.message}`);
+    process.exit(1);
+  }
   const pullArgs = branch
-    ? ["-C", repoDir, "pull", "--tags", "origin", branch]
-    : ["-C", repoDir, "pull", "--tags"];
+    ? ["-C", repoDir, "pull", "origin", branch]
+    : ["-C", repoDir, "pull"];
   const res = spawnSync("git", pullArgs, { stdio: "inherit" });
   if (res.error) {
     console.error(`error: failed to run git: ${res.error.message}`);
